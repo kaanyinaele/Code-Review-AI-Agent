@@ -3,6 +3,7 @@ import { simpleGit } from "simple-git";
 import { z } from "zod";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { resolveUnderRoot, ensureDir } from "./lib/path";
 
 const excludeFiles = ["dist", "bun.lock", ".git", "node_modules", "build", "coverage", ".next", ".turbo", "out"];
 
@@ -303,15 +304,9 @@ function toSimpleYaml(data: Record<string, any>): string {
 }
 
 async function generateMarkdownFile({ rootDir, relativePath, title, content, sections, frontMatter, overwrite = false, }: GenerateMarkdownFileInput) {
-  const rootAbs = path.resolve(rootDir);
-  const fullPath = path.resolve(rootAbs, relativePath);
+  const fullPath = resolveUnderRoot(rootDir, relativePath);
 
-  // Prevent writing outside of rootDir
-  if (!isSubPath(fullPath, rootAbs)) {
-    throw new Error(`Refusing to write outside rootDir. Got relativePath='${relativePath}'.`);
-  }
-
-  await fs.mkdir(path.dirname(fullPath), { recursive: true });
+  await ensureDir(path.dirname(fullPath));
 
   const exists = await fs
     .stat(fullPath)
