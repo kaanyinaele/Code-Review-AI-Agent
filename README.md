@@ -8,12 +8,16 @@ An AI-powered code review agent built with the Vercel AI SDK and Google Gemini. 
 - Requirements
 - Installation
 - Configuration (API keys)
+- Environment variables
 - Run
 - How it works
+- Security & safety
 - Available tools
   - getFileChangesInDirectoryTool
   - generateCommitMessageTool
   - generateMarkdownFileTool
+- Wire up additional tools
+- Tips
 - Examples
 - Development
 
@@ -56,6 +60,16 @@ export GOOGLE_API_KEY="<your-key>"
 
 If your environment or library version expects a different variable name, see the `@ai-sdk/google` documentation and set the corresponding variable (e.g., `GOOGLE_GENERATIVE_AI_API_KEY`).
 
+## Environment variables
+- `GOOGLE_API_KEY` (or your environment’s expected variable for `@ai-sdk/google`). The project warns if it’s missing. Set it before running:
+
+```bash
+export GOOGLE_API_KEY="<your-key>"
+```
+
+Optional:
+- `ROOT_DIR` – overrides the repository path the sample prompt asks the agent to review. Defaults to `../my-agent`.
+
 ## Run
 ```bash
 bun run index.ts
@@ -69,6 +83,11 @@ The default call in `index.ts` asks the agent to review changes in the `../my-ag
   - Tools: wired from `tools.ts`.
   - A simple `stopWhen(stepCountIs(10))` to keep generations focused.
 - Output streams directly to stdout.
+
+## Security & safety
+- File writes are restricted: `generateMarkdownFileTool` refuses to write outside `rootDir`.
+- Exclusions are broader to avoid noisy diffs: `.git/`, `node_modules/`, `dist/`, `build/`, `coverage/`, `.next/`, `.turbo/`, `out/`.
+- Git operations provide clearer error messages when the target is not a repository.
 
 ## Available tools
 All tools live in `tools.ts` and are created with the AI SDK’s `tool` helper.
@@ -144,6 +163,20 @@ const result = streamText({
   },
 });
 ```
+
+## Wire up additional tools
+The sample `index.ts` already includes:
+```ts
+import { getFileChangesInDirectoryTool, generateCommitMessageTool, generateMarkdownFileTool } from "./tools";
+```
+If you remove or add tools, update the `tools` object passed to `streamText` accordingly.
+
+## Tips
+- You can set a different repository path via `ROOT_DIR`:
+```bash
+ROOT_DIR="/abs/path/to/repo" bun run index.ts
+```
+- If you need a longer or shorter response, adjust `stepCountIs(10)` in `index.ts`.
 
 ## Examples
 Below are example natural-language prompts you can pass to the agent after wiring the tools in `index.ts`:

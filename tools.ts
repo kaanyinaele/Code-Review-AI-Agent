@@ -4,22 +4,37 @@ import { z } from "zod";
 import fs from "node:fs/promises";
 import path from "node:path";
 
-const excludeFiles = ["dist", "bun.lock"];
+const excludeFiles = ["dist", "bun.lock", ".git", "node_modules", "build", "coverage", ".next", ".turbo", "out"];
 
 const fileChange = z.object({
   rootDir: z.string().min(1).describe("The root directory"),
 });
 
 // Helpers
-function shouldExclude(filePath: string) {
+export function shouldExclude(filePath: string) {
+  const p = filePath.replace(/\\/g, "/");
   return (
-    excludeFiles.includes(filePath) ||
-    filePath.startsWith("dist/") ||
-    filePath === "dist"
+    excludeFiles.includes(p) ||
+    p.startsWith("dist/") ||
+    p.startsWith("node_modules/") ||
+    p.startsWith(".git/") ||
+    p.startsWith("build/") ||
+    p.startsWith("coverage/") ||
+    p.startsWith(".next/") ||
+    p.startsWith(".turbo/") ||
+    p.startsWith("out/") ||
+    p === "dist" ||
+    p === "node_modules" ||
+    p === ".git" ||
+    p === "build" ||
+    p === "coverage" ||
+    p === ".next" ||
+    p === ".turbo" ||
+    p === "out"
   );
 }
 
-function isDocFile(filePath: string) {
+export function isDocFile(filePath: string) {
   const p = filePath.toLowerCase();
   return (
     p.endsWith(".md") ||
@@ -29,7 +44,7 @@ function isDocFile(filePath: string) {
   );
 }
 
-function isTestFile(filePath: string) {
+export function isTestFile(filePath: string) {
   const p = filePath.toLowerCase();
   return (
     p.includes("/__tests__/") ||
@@ -42,7 +57,7 @@ function isTestFile(filePath: string) {
   );
 }
 
-function isConfigFile(filePath: string) {
+export function isConfigFile(filePath: string) {
   const base = path.basename(filePath).toLowerCase();
   const configNames = new Set([
     "package.json",
@@ -68,7 +83,7 @@ function isConfigFile(filePath: string) {
   );
 }
 
-function topLevelScope(files: string[]): string | undefined {
+export function topLevelScope(files: string[]): string | undefined {
   for (const f of files) {
     const parts = f.split("/").filter(Boolean);
     if (parts.length > 1) return parts[0];
@@ -82,24 +97,38 @@ function topLevelScope(files: string[]): string | undefined {
   return undefined;
 }
 
-function truncate(str: string, max: number) {
+export function truncate(str: string, max: number) {
   return str.length > max ? str.slice(0, max - 1).trimEnd() + "…" : str;
+}
+
+function isSubPath(childAbs: string, parentAbs: string) {
+  const rel = path.relative(parentAbs, childAbs);
+  return !!rel && !rel.startsWith("..") && !path.isAbsolute(rel);
 }
 
 type FileChange = z.infer<typeof fileChange>;
 
 async function getFileChangesInDirectory({ rootDir }: FileChange) {
   const git = simpleGit(rootDir);
-  const summary = await git.diffSummary();
-  const diffs: { file: string; diff: string }[] = [];
+  try {
+    const isRepo = await git.checkIsRepo();
+    if (!isRepo) {
+      throw new Error(`Not a git repository: ${rootDir}`);
+    }
 
-  for (const file of summary.files) {
-    if (shouldExclude(file.file)) continue;
-    const diff = await git.diff(["--", file.file]);
-    diffs.push({ file: file.file, diff });
+    const summary = await git.diffSummary();
+    const diffs: { file: string; diff: string }[] = [];
+
+    for (const file of summary.files) {
+      if (shouldExclude(file.file)) continue;
+      const diff = await git.diff(["-U0", "--", file.file]);
+      diffs.push({ file: file.file, diff });
+    }
+
+    return diffs;
+  } catch (err: any) {
+    throw new Error(`Failed to get file changes: ${err?.message ?? String(err)}`);
   }
-
-  return diffs;
 }
 
 export const getFileChangesInDirectoryTool = tool({
@@ -121,97 +150,107 @@ const generateCommitMessageInput = z.object({
   maxSubjectLength: z.number().int().positive().max(100).optional().default(72),
 });
 
-type GenerateCommitMessageInput = z.infer<typeof generateCommitMessageInput>;
+export type GenerateCommitMessageInput = z.infer<typeof generateCommitMessageInput>;
 
 async function generateCommitMessage({ rootDir, type, scope, summary, includeBody = true, maxSubjectLength = 72, }: GenerateCommitMessageInput) {
   const git = simpleGit(rootDir);
-  const status = await git.status();
-  const diffSummary = await git.diffSummary();
+  try {
+    const isRepo = await git.checkIsRepo();
+    if (!isRepo) {
+      throw new Error(`Not a git repository: ${rootDir}`);
+    }
 
-  const renamed = status.renamed
-    .map((r) => (typeof r === "string" ? r : r.to))
-    .filter((x): x is string => !!x);
+    const status = await git.status();
+    const diffSummary = await git.diffSummary();
 
-  const changedFiles: string[] = [
-    ...status.created,
-    ...status.modified,
-    ...status.deleted,
-    ...renamed,
-  ].filter((f): f is string => !!f && !shouldExclude(f));
+    const renamed = status.renamed
+      .map((r) => (typeof r === "string" ? r : r.to))
+      .filter((x): x is string => !!x);
 
-  // Derive type if not provided
-  let inferredType: NonNullable<GenerateCommitMessageInput["type"]> = "refactor";
-  const nonExcludedSummaryFiles = diffSummary.files
-    .map((f: { file: string }) => f.file)
-    .filter((f: string) => !shouldExclude(f));
-  const onlyDocs = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isDocFile);
-  const onlyTests = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isTestFile);
-  const onlyConfig = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isConfigFile);
-  const anyAdded = status.created.some((f) => !shouldExclude(f));
-  const anyDeleted = status.deleted.some((f) => !shouldExclude(f));
+    const changedFiles: string[] = [
+      ...status.created,
+      ...status.modified,
+      ...status.deleted,
+      ...renamed,
+    ].filter((f): f is string => !!f && !shouldExclude(f));
 
-  if (type) {
-    inferredType = type;
-  } else if (onlyDocs) {
-    inferredType = "docs";
-  } else if (onlyTests) {
-    inferredType = "test";
-  } else if (onlyConfig) {
-    inferredType = "chore";
-  } else if (anyAdded) {
-    inferredType = "feat";
-  } else if (anyDeleted) {
-    inferredType = "chore";
-  } else {
-    // Default to refactor for code-only changes without adds/deletes
-    inferredType = "refactor";
+    // Derive type if not provided
+    let inferredType: NonNullable<GenerateCommitMessageInput["type"]> = "refactor";
+    const nonExcludedSummaryFiles = diffSummary.files
+      .map((f: { file: string }) => f.file)
+      .filter((f: string) => !shouldExclude(f));
+
+    const onlyDocs = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isDocFile);
+    const onlyTests = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isTestFile);
+    const onlyConfig = nonExcludedSummaryFiles.length > 0 && nonExcludedSummaryFiles.every(isConfigFile);
+    const anyAdded = status.created.some((f) => !shouldExclude(f));
+    const anyDeleted = status.deleted.some((f) => !shouldExclude(f));
+
+    if (type) {
+      inferredType = type;
+    } else if (onlyDocs) {
+      inferredType = "docs";
+    } else if (onlyTests) {
+      inferredType = "test";
+    } else if (onlyConfig) {
+      inferredType = "chore";
+    } else if (anyAdded) {
+      inferredType = "feat";
+    } else if (anyDeleted) {
+      inferredType = "chore";
+    } else {
+      // Default to refactor for code-only changes without adds/deletes
+      inferredType = "refactor";
+    }
+
+    // Derive scope if not provided
+    const derivedScope = scope || topLevelScope(nonExcludedSummaryFiles);
+
+    // Build subject
+    let subject: string;
+    if (summary) {
+      subject = summary;
+    } else if (changedFiles.length === 1) {
+      const file = changedFiles[0]!;
+      const base = path.basename(file);
+      if (status.created.includes(file)) subject = `add ${base}`;
+      else if (status.deleted.includes(file)) subject = `remove ${base}`;
+      else if (status.modified.includes(file)) subject = `update ${base}`;
+      else subject = `update ${base}`;
+    } else if (changedFiles.length > 1) {
+      const s = topLevelScope(nonExcludedSummaryFiles);
+      if (s) subject = `update ${s} files`;
+      else subject = `update ${changedFiles.length} files`;
+    } else {
+      subject = "update project files";
+    }
+
+    const header = `${inferredType}${derivedScope ? `(${derivedScope})` : ""}: ${truncate(subject, maxSubjectLength)}`;
+
+    if (!includeBody) return header;
+
+    // Build body with a concise changelist
+    const lines: string[] = [];
+    const showFiles = nonExcludedSummaryFiles.slice(0, 20); // cap list
+    for (const f of showFiles) {
+      const base = path.basename(f);
+      const prefix = isDocFile(f)
+        ? "docs"
+        : isTestFile(f)
+        ? "test"
+        : isConfigFile(f)
+        ? "config"
+        : "code";
+      lines.push(`- ${prefix}: ${f}`);
+    }
+    if (nonExcludedSummaryFiles.length > showFiles.length) {
+      lines.push(`- …and ${nonExcludedSummaryFiles.length - showFiles.length} more file(s)`);
+    }
+
+    return [header, "", ...lines].join("\n");
+  } catch (err: any) {
+    throw new Error(`Failed to generate commit message: ${err?.message ?? String(err)}`);
   }
-
-  // Derive scope if not provided
-  const derivedScope = scope || topLevelScope(nonExcludedSummaryFiles);
-
-  // Build subject
-  let subject: string;
-  if (summary) {
-    subject = summary;
-  } else if (changedFiles.length === 1) {
-    const file = changedFiles[0]!;
-    const base = path.basename(file);
-    if (status.created.includes(file)) subject = `add ${base}`;
-    else if (status.deleted.includes(file)) subject = `remove ${base}`;
-    else if (status.modified.includes(file)) subject = `update ${base}`;
-    else subject = `update ${base}`;
-  } else if (changedFiles.length > 1) {
-    const s = topLevelScope(nonExcludedSummaryFiles);
-    if (s) subject = `update ${s} files`;
-    else subject = `update ${changedFiles.length} files`;
-  } else {
-    subject = "update project files";
-  }
-
-  const header = `${inferredType}${derivedScope ? `(${derivedScope})` : ""}: ${truncate(subject, maxSubjectLength)}`;
-
-  if (!includeBody) return header;
-
-  // Build body with a concise changelist
-  const lines: string[] = [];
-  const showFiles = nonExcludedSummaryFiles.slice(0, 20); // cap list
-  for (const f of showFiles) {
-    const base = path.basename(f);
-    const prefix = isDocFile(f)
-      ? "docs"
-      : isTestFile(f)
-      ? "test"
-      : isConfigFile(f)
-      ? "config"
-      : "code";
-    lines.push(`- ${prefix}: ${f}`);
-  }
-  if (nonExcludedSummaryFiles.length > showFiles.length) {
-    lines.push(`- …and ${nonExcludedSummaryFiles.length - showFiles.length} more file(s)`);
-  }
-
-  return [header, "", ...lines].join("\n");
 }
 
 export const generateCommitMessageTool = tool({
@@ -241,7 +280,7 @@ const generateMarkdownFileInput = z.object({
   overwrite: z.boolean().optional().default(false),
 });
 
-type GenerateMarkdownFileInput = z.infer<typeof generateMarkdownFileInput>;
+export type GenerateMarkdownFileInput = z.infer<typeof generateMarkdownFileInput>;
 
 function toSimpleYaml(data: Record<string, any>): string {
   const lines: string[] = [];
@@ -264,7 +303,13 @@ function toSimpleYaml(data: Record<string, any>): string {
 }
 
 async function generateMarkdownFile({ rootDir, relativePath, title, content, sections, frontMatter, overwrite = false, }: GenerateMarkdownFileInput) {
-  const fullPath = path.resolve(rootDir, relativePath);
+  const rootAbs = path.resolve(rootDir);
+  const fullPath = path.resolve(rootAbs, relativePath);
+
+  // Prevent writing outside of rootDir
+  if (!isSubPath(fullPath, rootAbs)) {
+    throw new Error(`Refusing to write outside rootDir. Got relativePath='${relativePath}'.`);
+  }
 
   await fs.mkdir(path.dirname(fullPath), { recursive: true });
 
