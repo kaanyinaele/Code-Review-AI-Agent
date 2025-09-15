@@ -1,4 +1,4 @@
-# my-agent
+# Code-Review-AI-Agent
 
 An AI-powered code review agent built with the Vercel AI SDK and Google Gemini. It streams constructive, actionable code review feedback for your local git changes and includes developer tools for generating Conventional Commit messages and creating Markdown documents.
 
